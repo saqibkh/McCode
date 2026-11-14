@@ -15,27 +15,26 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - name: Start nvhpc install (background)
+      - name: Install nvhpc
+        timeout-minutes: 25
         run: |
           date +%s > t0
-          { (
-            set -euo pipefail
-            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-            curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
-            echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
-            sudo apt-get update -y
-            sudo apt-get install -y --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
-            sudo apt-get clean
-          ) > nvhpc.log 2>&1; echo $? > nvhpc.done; } < /dev/null > /dev/null 2>&1 &
+          set -euo pipefail
+          sudo grep -rl 'azure.archive.ubuntu.com' /etc/apt/sources.list /etc/apt/sources.list.d --include='*.list' --include='*.sources' 2>/dev/null | xargs -r sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g'
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
+          sudo apt-get clean
+          echo "nvhpc seconds: $(( $(date +%s) - $(cat t0) ))"
       - uses: pantheongpu/setup-pantheonsim@656f502ef4782d94d34d8ddd368e333960609639
         with:
           gpu: nvidia/h100
           cuda-toolkit: "13.0"
-      - name: Wait for nvhpc
+      - name: nvhpc on PATH
         timeout-minutes: 30
         run: |
-          while [ ! -f nvhpc.done ]; do sleep 15; done
-          tail -5 nvhpc.log; test "$(cat nvhpc.done)" = 0
           echo "setup seconds: $(( $(date +%s) - $(cat t0) ))"
           echo /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/compilers/bin >> "$GITHUB_PATH"
       - name: nvc gpu options
@@ -72,18 +71,19 @@ jobs:
         with:
           path: src
           persist-credentials: false
-      - name: Start nvhpc install (background)
+      - name: Install nvhpc
+        timeout-minutes: 25
         run: |
           date +%s > t0
-          { (
-            set -euo pipefail
-            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-            curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
-            echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
-            sudo apt-get update -y
-            sudo apt-get install -y --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
-            sudo apt-get clean
-          ) > nvhpc.log 2>&1; echo $? > nvhpc.done; } < /dev/null > /dev/null 2>&1 &
+          set -euo pipefail
+          sudo grep -rl 'azure.archive.ubuntu.com' /etc/apt/sources.list /etc/apt/sources.list.d --include='*.list' --include='*.sources' 2>/dev/null | xargs -r sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g'
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
+          sudo apt-get clean
+          echo "nvhpc seconds: $(( $(date +%s) - $(cat t0) ))"
       - uses: pantheongpu/setup-pantheonsim@656f502ef4782d94d34d8ddd368e333960609639
         with:
           gpu: nvidia/h100
@@ -96,11 +96,9 @@ jobs:
           environment-file: dependencies.yml
       - name: Build and install mcstas (conda)
         run: ./src/devel/bin/mccode-build-conda -m mcstas -s $PWD/src -b $PWD/build_mcstas
-      - name: Wait for nvhpc
+      - name: nvhpc on PATH
         timeout-minutes: 30
         run: |
-          while [ ! -f nvhpc.done ]; do sleep 15; done
-          tail -5 nvhpc.log; test "$(cat nvhpc.done)" = 0
           echo /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/compilers/bin >> "$GITHUB_PATH"
           CFG=${CONDA_PREFIX}/share/mcstas/tools/Python/mccodelib/mccode_config.json
           sed -i 's/-gpu=mem:managed/-gpu=cc90,mem:managed/' $CFG
