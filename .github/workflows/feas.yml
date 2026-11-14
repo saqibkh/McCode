@@ -1,0 +1,120 @@
+name: feas-openacc
+on:
+  push:
+    branches: [feas-openacc]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NVHPC_VERSION: '26.9'
+jobs:
+  tiny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Start nvhpc install (background)
+        run: |
+          date +%s > t0
+          { (
+            set -euo pipefail
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
+            echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
+            sudo apt-get clean
+          ) > nvhpc.log 2>&1; echo $? > nvhpc.done; } < /dev/null > /dev/null 2>&1 &
+      - uses: pantheongpu/setup-pantheonsim@656f502ef4782d94d34d8ddd368e333960609639
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+      - name: Wait for nvhpc
+        timeout-minutes: 30
+        run: |
+          while [ ! -f nvhpc.done ]; do sleep 15; done
+          tail -5 nvhpc.log; test "$(cat nvhpc.done)" = 0
+          echo "setup seconds: $(( $(date +%s) - $(cat t0) ))"
+          echo /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/compilers/bin >> "$GITHUB_PATH"
+      - name: nvc gpu options
+        run: |
+          nvc --version
+          nvc -help -gpu 2>&1 | head -80 || true
+          ls /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/cuda/
+      - name: Compile and inspect
+        run: |
+          OBJD=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/cuda -name cuobjdump -type f | head -1)
+          echo "cuobjdump: $OBJD"
+          for v in "cc90" "cc90,mem:managed" "cc80,mem:managed"; do
+            o=acc_$(echo $v | tr ',:' '__')
+            echo "=== $v -> $o"
+            nvc -fast -Minfo=accel -acc=gpu -gpu=$v -o $o .feas/accsmoke.c || continue
+            $OBJD --list-elf $o || true
+            $OBJD --list-ptx $o || true
+            ldd $o | grep -iE 'acc|cuda|nv' || true
+          done
+      - name: Run under simulator
+        run: |
+          for o in acc_cc90 acc_cc90_mem_managed acc_cc80_mem_managed; do
+            echo "=== $o"
+            NVCOMPILER_ACC_NOTIFY=3 timeout 600 vgpu run --gpu nvidia/h100 ./$o && echo "RESULT $o OK" || echo "RESULT $o FAILED rc=$?"
+          done
+  mccode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          path: src
+          persist-credentials: false
+      - name: Start nvhpc install (background)
+        run: |
+          date +%s > t0
+          { (
+            set -euo pipefail
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
+            echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' | sudo tee /etc/apt/sources.list.d/nvhpc.list
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends nvhpc-${NVHPC_VERSION/./-}
+            sudo apt-get clean
+          ) > nvhpc.log 2>&1; echo $? > nvhpc.done; } < /dev/null > /dev/null 2>&1 &
+      - uses: pantheongpu/setup-pantheonsim@656f502ef4782d94d34d8ddd368e333960609639
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+      - name: Get conda dependency list
+        run: ./src/devel/bin/mccode-create-conda-yml -m mcstas -n mcstas -o dependencies.yml
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: mcstas
+          environment-file: dependencies.yml
+      - name: Build and install mcstas (conda)
+        run: ./src/devel/bin/mccode-build-conda -m mcstas -s $PWD/src -b $PWD/build_mcstas
+      - name: Wait for nvhpc
+        timeout-minutes: 30
+        run: |
+          while [ ! -f nvhpc.done ]; do sleep 15; done
+          tail -5 nvhpc.log; test "$(cat nvhpc.done)" = 0
+          echo /opt/nvidia/hpc_sdk/Linux_x86_64/${NVHPC_VERSION}/compilers/bin >> "$GITHUB_PATH"
+          CFG=${CONDA_PREFIX}/share/mcstas/tools/Python/mccodelib/mccode_config.json
+          sed -i 's/-gpu=mem:managed/-gpu=cc90,mem:managed/' $CFG
+          grep -H OACCFLAGS $CFG
+          echo "setup seconds: $(( $(date +%s) - $(cat t0) ))"
+      - name: mctest OpenACC on simulated H100
+        run: |
+          t=$(date +%s)
+          vgpu run --gpu nvidia/h100 mctest --verbose --noplots --openacc --no-mpi -n 1e5 --instr=BNL_H8,ISIS_CRISP,templateSANS_Mantid --testdir=run_gpu || echo "MCTEST rc=$?"
+          echo "mctest seconds: $(( $(date +%s) - t ))"
+          echo "total seconds: $(( $(date +%s) - $(cat t0) ))"
+      - name: Show outputs
+        if: always()
+        run: |
+          find run_gpu -maxdepth 3 | head -60
+          for f in $(find run_gpu -name 'run_stdout_*.txt'); do echo "== $f"; tail -30 $f; done
+          find run_gpu -name '*.json' -size -200k | head -3 | xargs -r cat | head -200
