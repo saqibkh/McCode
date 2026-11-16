@@ -3,6 +3,8 @@ name: mcstas-openacc-gpu-sim
 # standard runners have no GPU. The monitor values are checked against the reference
 # values in the instrument files.
 on:
+  push:
+    branches: [verify-fmod-676]
   workflow_dispatch:
     inputs:
       instr:
@@ -21,7 +23,7 @@ permissions:
 jobs:
   openacc-gpu-sim:
     name: ubuntu-24.04.conda.openacc.h100-sim
-    if: inputs.instr != '' || inputs.comp != ''
+    if: true
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -58,10 +60,11 @@ jobs:
 
     # Simulated H100: no GPU on the runner. The simulator is built (cached) from the pinned commit.
     - name: Simulated NVIDIA H100 (PantheonSim)
-      uses: pantheongpu/pantheonsim@78385cc07a5d86552f4b2fcd16da50cde2e9be9f
+      uses: saqibkh/pantheonsim@fdc114bd3f4045a98041758b08c012b1d0a48b79
       with:
         gpu: nvidia/h100
         cuda-toolkit: '13.0'
+        prebuilt: 'false'
 
     - name: Get conda dependency list
       run: ./src/devel/bin/mccode-create-conda-yml -m mcstas -n mcstas -o dependencies.yml
@@ -91,7 +94,7 @@ jobs:
 
     - name: OpenACC reference tests on the simulated H100
       env:
-        INSTR: ${{ inputs.instr }}
+        INSTR: ${{ inputs.instr || 'PSI_DMC,PSI_DMC_simple' }}
         COMP: ${{ inputs.comp }}
         NVCOMPILER_ACC_TIME: 1
       run: |
